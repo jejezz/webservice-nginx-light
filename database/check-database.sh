@@ -85,7 +85,7 @@ if ! command -v mariadb >/dev/null 2>&1; then
     pend "MariaDB 클라이언트가 없습니다 — sudo database/install_mariadb.sh 로 설치하세요"
 elif systemctl is-active --quiet mariadb; then
     MARIADB_UP=true
-    ok "서비스 동작 중 ($(mariadb --version 2>/dev/null | sed -n 's/.*Distrib \([^,]*\).*/\1/p'))"
+    ok "서비스 동작 중 ($(mariadb --version 2>/dev/null | sed -nE 's/.*Distrib ([^,]*).*/\1/p; s/^mariadb from ([^,]*),.*/\1/p'))"
 else
     # 설치는 돼 있는데 떠 있지 않다. 아직 안 한 것이 아니라 어긋난 것이다.
     warn "MariaDB 가 떠 있지 않습니다 (systemctl status mariadb)"
