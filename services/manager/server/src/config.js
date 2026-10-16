@@ -150,6 +150,8 @@ function loadSharedSecret() {
 const sessionSecret =
   process.env.MANAGER_SESSION_SECRET || merged.sessionSecret || loadSharedSecret();
 
+let dbPassword = loadDbPassword(merged.database);
+
 module.exports = Object.freeze({
   configPath,
   managerDir: MANAGER_DIR,
@@ -182,7 +184,13 @@ module.exports = Object.freeze({
     host: merged.database.host,
     port: parseInt(merged.database.port, 10) || 3306,
     user: merged.database.user,
-    password: loadDbPassword(merged.database),
+    // 시작할 때 비밀번호 파일이 아직 없을 수 있다 (manager 를 먼저 띄우고 setup_mariadb.sh 를 나중에
+    // 돌린 경우). 한 번 빈 값으로 굳으면 pm2 restart 전까지 ER_ACCESS_DENIED 가 계속되므로,
+    // 비어 있는 동안은 풀을 만들 때마다 다시 읽는다.
+    get password() {
+      if (!dbPassword) dbPassword = loadDbPassword(merged.database);
+      return dbPassword;
+    },
     name: merged.database.name,
     connectionLimit: parseInt(merged.database.connectionLimit, 10) || 5,
   },
