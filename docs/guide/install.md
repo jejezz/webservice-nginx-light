@@ -455,7 +455,11 @@ cd services/manager/server && npm run admin -- approve you@example.com
 - **MySQL 8.0 에서 옮기는 장비.** [infrastructure.md](infrastructure.md) 7.9 의 순서를
   따릅니다. 덤프 변환과 계정 호스트 범위가 걸립니다.
 
-**`tls.decide`.** 사설로 간다면 인증서를 만들어 둡니다. `nginx.routes` 점검이 서버 인증서
+**`tls.decide`.** 사설로 간다면 인증서를 만들어 둡니다. 마법사가 보여 주는 `--auto` 는 **외부 IP 를
+인터넷에서 조회해 인증서의 SAN 에 함께 넣습니다.** LAN 전용이면 원치 않는 값이므로
+`./generate_certs.sh --ip <LAN IP> <host>` 로 직접 지정하세요(예: `--ip 10.10.0.225 10.10.0.225`).
+이 스크립트는 **다시 실행하면 CA 부터 새로 만들어 덮어씁니다** — 클라이언트에 CA 를 신뢰 등록한
+뒤에는 다시 만들지 마세요. 사설 서버 인증서의 유효 기간은 1년입니다(`openssl x509 -enddate -noout -in nginx/cert/server/server.crt`). `nginx.routes` 점검이 서버 인증서
 파일이 없으면 문제로 보고하므로 그것이 앞이어야 합니다.
 
 **`nginx.routes`.** 라우트는 서비스가 뜬 뒤에 반영합니다. 뒤집으면 `/manager` 가 502 입니다.
