@@ -1,0 +1,19 @@
+{
+  "name": "manager-service",
+  "private": true,
+  "version": "1.0.0",
+  "description": "관리 대시보드 — server(런타임)와 web(빌드 타임) 두 패키지를 여기서 부른다",
+  "scripts": {
+    "setup": "npm --prefix server install --no-audit --no-fund && npm --prefix web install --no-audit --no-fund && npm --prefix web run build",
+    "postsetup": "node check-restart.js",
+    "check": "node check-deps.js && node check-build.js && node check-restart.js",
+    "check:build": "node check-build.js",
+    "check:restart": "node check-restart.js",
+    "prebuild": "node check-deps.js",
+    "build": "npm --prefix web run build",
+    "postbuild": "node check-restart.js",
+    "restart": "../../lib/pm2-restart.sh",
+    "predev": "node check-deps.js",
+    "dev": "npm --prefix web run dev"
+  }
+}

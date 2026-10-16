@@ -1,0 +1,19 @@
+# {{NAME}}
+
+manager 의 서비스 추가 마법사가 만든 스켈레톤입니다. 이 파일은 다시
+생성되지 않으니 그대로 고쳐 쓰세요.
+
+## 지금 갖춘 것
+
+- `nginx-conf/service.ini` — `/{{NAME}}` 을 `127.0.0.1:{{PORT}}` 로 프록시
+- `pm2-conf/app.ini` — pm2 가 `server/src/index.js` 를 `{{PORT}}` 번 포트로 띄움
+- `server/src/index.js` — `/health` 만 규약대로 응답하는 최소 Express 앱
+
+## 다음에 할 것
+
+1. `cd server && npm install`
+2. `server/src/index.js` 를 실제 로직으로 바꾸세요. `/health` 의 모양은
+   유지해야 합니다 ([docs/guide/contracts.md '/health 응답 규약'](../../docs/guide/contracts.md)).
+3. manager 대시보드의 "서비스 추가" 마법사 2단계에서 이 서비스를
+   등록하고 무결성을 확인하세요 — 실행할 명령은 그 화면이 그대로
+   보여줍니다([docs/guide/rollout.md '등록 순서'](../../docs/guide/rollout.md)).

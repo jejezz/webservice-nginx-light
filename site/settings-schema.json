@@ -1,0 +1,31 @@
+{
+  "service": "site",
+  "applyCommand": "./site/apply.sh --apply",
+  "settingsFile": "settings.ini",
+  "appliedFile": ".applied-settings",
+  "fields": [
+    {
+      "key": "host",
+      "label": "이 장비의 공개 호스트",
+      "help": "브라우저가 붙는 이름입니다. 스킴 없이 호스트만 적습니다. 인증서와 nginx 가 이 값에서 나옵니다. 공인 인증서를 쓰려면 **소유한 도메인 아래의 이름이어야 하고**(DDNS 이름 *.iptime.org 불가 — 그 존에 레코드를 만들 권한이 없습니다), 등록기관에서 이 이름의 A 레코드를 이 서버의 공인 IP 로 만들어 두어야 합니다. LAN 전용 배치는 아무 이름이나 되지만 tls_mode 를 private 로 못박으세요.",
+      "placeholder": "manager.example.com",
+      "optional": false,
+      "type": "hostname",
+      "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$",
+      "patternHint": "점이 있는 호스트 이름 (예: manager.example.com)",
+      "effect": "nginx 의 server_name 과 서버 인증서의 이름이 됩니다."
+    },
+    {
+      "key": "tls_mode",
+      "label": "서버 인증서를 어디서 받나",
+      "help": "`auto` · `public` · `private` 셋 중 하나입니다. 비워 두면 `auto` 이고, 이 이름으로 발급받은 공인 인증서가 있으면 그것을, 없으면 사설 CA 를 씁니다. LAN 전용 배치처럼 도메인이 없는 곳은 `private` 로 못박아 두면 판정이 흔들리지 않습니다.",
+      "placeholder": "auto",
+      "optional": true,
+      "default": "auto",
+      "type": "text",
+      "pattern": "^(auto|public|private)$",
+      "patternHint": "auto · public · private 셋 중 하나",
+      "effect": "nginx 가 내밀 서버 인증서의 경로가 여기서 나옵니다 — public 이면 /etc/letsencrypt/live/<host>/, private 이면 nginx/cert/server/. 클라이언트 인증서를 검증하는 CA(mTLS)는 이 값과 무관하게 사설 CA 그대로입니다. nginx-stack.conf 의 [tls] cert_file 을 직접 적으면 그것이 이깁니다."
+    }
+  ]
+}

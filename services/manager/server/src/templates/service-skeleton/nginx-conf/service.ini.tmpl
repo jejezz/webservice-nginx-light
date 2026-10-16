@@ -1,0 +1,15 @@
+# {{NAME}} 리버스 프록시 선언
+# 스키마: ../../../docs/guide/declarations.md 'nginx-conf'
+#
+# manager 의 서비스 추가 마법사가 만든 스켈레톤입니다. 손으로 고쳐 써도
+# 됩니다 — 이 자리표시자 파일은 다시 생성되지 않습니다.
+
+[service]
+name        = {{NAME}}
+host        = 127.0.0.1
+ports       = {{PORT}}
+protocol    = http
+health_path = /health
+
+[route:main]
+location = /{{NAME}}

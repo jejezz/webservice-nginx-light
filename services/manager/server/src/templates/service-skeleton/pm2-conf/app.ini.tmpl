@@ -1,0 +1,14 @@
+# {{NAME}} 프로세스 선언
+# 스키마: ../../../docs/guide/declarations.md 'pm2-conf'
+#
+# manager 의 서비스 추가 마법사가 만든 스켈레톤입니다. 손으로 고쳐 써도
+# 됩니다 — 이 자리표시자 파일은 다시 생성되지 않습니다.
+
+[app]
+name   = {{NAME}}
+cwd    = server
+script = src/index.js
+
+[env]
+NODE_ENV = production
+PORT     = {{PORT}}

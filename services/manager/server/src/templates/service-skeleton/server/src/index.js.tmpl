@@ -1,0 +1,70 @@
+/**
+ * {{NAME}} — manager 의 서비스 추가 마법사가 만든 스켈레톤.
+ *
+ * 이 파일은 여기서부터 진짜 로직으로 바꿔 쓰라고 있는 것입니다. 지금 갖추고
+ * 있는 것은 딱 셋입니다 — pm2 가 띄우고, nginx-conf/pm2-conf 선언과 이름이
+ * 맞고, /health 가 규약대로 응답하는 것. 이 셋이 이미 됐다는 것을 마법사의
+ * 2단계(등록 + 무결성 확인)가 확인해 줍니다.
+ */
+const express = require('express');
+const pkg = require('../package.json');
+
+const PORT = Number(process.env.PORT) || {{PORT}};
+// 다른 모든 서비스처럼 루프백에만 묶는다 — Nginx 를 거치지 않은 직접 접근을
+// 막는다 (docs/guide/declarations.md 'nginx-conf').
+const HOST = process.env.HOST || '127.0.0.1';
+
+const startedAt = Date.now();
+
+const app = express();
+app.disable('x-powered-by');
+
+/**
+ * /health — 모든 서비스가 같은 형태로 응답해야 하는 상태 확인 엔드포인트
+ * (docs/guide/contracts.md '/health 응답 규약'). manager 대시보드는 이 형태만 안다.
+ *
+ * ⚠️ 인증·바디파서 같은 미들웨어보다 **앞**에 둔다. manager 는 루프백에서
+ * 인증 없이 이 경로를 호출한다 — 뒤에 두면 그 호출이 막혀 "떠 있는데
+ * 죽은 것처럼" 보인다.
+ *
+ * service 는 반드시 nginx-conf/service.ini 의 [service] name,
+ * pm2-conf/app.ini 의 [app] name 과 같아야 한다. 셋이 어긋나면 대시보드가
+ * "떠 있는데 이름이 다른" 서비스로 잘못 짝짓는다.
+ */
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    service: '{{NAME}}',
+    status: 'ok',
+    version: pkg.version,
+    uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
+    pid: process.pid,
+    timestamp: new Date().toISOString(),
+    // 이 서비스만의 정보(DB 연결 상태, 큐 길이 …)는 여기 안에 넣는다.
+    // 최상위에 새 필드를 만들지 않는다 — 대시보드가 무시한다.
+    details: {},
+  });
+});
+
+// 여기서부터 실제 로직을 채워 넣는다. 아래는 자리표시자다.
+app.get('/', (req, res) => {
+  res.json({ service: '{{NAME}}', message: '아직 아무 로직도 없습니다 — server/src/index.js 를 채우세요.' });
+});
+
+const server = app.listen(PORT, HOST, () => {
+  console.log(`{{NAME}} listening on ${HOST}:${PORT}`);
+});
+
+// 기동 실패(포트 충돌 등)는 살려 둘 이유가 없다 — 듣지도 못하는 프로세스를
+// pm2 가 정상으로 보게 두지 않는다.
+server.on('error', (err) => {
+  console.error(`서버를 시작할 수 없습니다 (${HOST}:${PORT}): ${err.message}`);
+  process.exit(1);
+});
+
+function shutdown(signal) {
+  console.log(`${signal} received, shutting down...`);
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 5000);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

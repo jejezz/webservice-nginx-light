@@ -1,0 +1,823 @@
+const express = require('express');
+const config = require('../config');
+const log = require('../logger');
+const session = require('../auth/session');
+const { createUserStore } = require('../auth/user-store');
+const { loadServices } = require('../services/registry');
+const health = require('../services/health');
+const pm2 = require('../services/pm2');
+const nginx = require('../services/nginx');
+const host = require('../services/host');
+const metrics = require('../services/metrics');
+const checks = require('../services/checks');
+const setupAutoSvc = require('../services/setup-auto');
+const cert = require('../services/cert');
+const setup = require('../services/setup');
+const attest = require('../services/setup-attest');
+const setupAuto = require('../services/setup-auto');
+const removal = require('../services/remove');
+const portMap = require('../services/port-map');
+const docs = require('../services/docs');
+const guides = require('../services/guides');
+const changelog = require('../services/changelog');
+const central = require('../services/central');
+const { router: adminRouter } = require('./admin');
+const { router: wizardRouter, requireAdminRole } = require('./wizard');
+
+const userStore = createUserStore(config.auth);
+
+// --- 로그인 시도 제한 (IP 단위, 인메모리) ---
+//
+// 무엇을 세는가: 틀린 비밀번호(default 분기)와, 처음 보는 이메일로 새 승인
+// 요청을 실제로 만든 경우(대소문자를 안 가리는 signup) 둘 다 recordFailure()
+// 하나로 센다. 후자를 빼놓으면 administrator 테이블에 이메일만 바꿔가며
+// 무제한으로 승인 대기 행을 쌓을 수 있다 — 틀린 비밀번호가 아니라서 잠금에
+// 안 걸렸었다.
+//
+// ── 잠긴 IP는 어떻게 풀리는가 ──────────────────────────────────────────
+//
+// **가만히 두면 자동으로 풀린다.** 사람이 해제할 방법을 따로 두지 않았다.
+//
+//   - 창(window)의 시작은 그 IP의 **첫** 실패/가입 시도 시각(entry.first)이다.
+//   - 그 뒤 LOCKOUT_MS(5분) 안에 MAX_ATTEMPTS(5)번을 채우면 잠긴다.
+//   - 잠긴 뒤에도 시계는 계속 entry.first 기준으로 간다 — 잠긴 동안 더
+//     두드려도 잠금이 늘어나지 않는다. entry.first + 5분이 지나면 다음 확인에서
+//     조용히 지워지고 그 IP는 다시 5번의 기회를 받는다.
+//   - 상태는 프로세스 메모리에만 있다. `pm2 restart manager` 를 하면(예:
+//     설정을 새로 반영할 때) 모든 IP의 잠금이 그 순간 전부 풀린다 — 별도
+//     저장소를 두지 않은 것은 의도적이다: 재부팅마다 다시 잠기는 공격자보다,
+//     실수로 잠긴 관리자가 재시도할 방법이 없는 쪽이 더 나쁘다고 판단했다.
+//
+// 클라이언트에는 남은 시간을 retryAfterSec 로 그대로 알려준다 — "잠시 후"가
+// 정확히 몇 초 뒤인지 화면에서 보여줄 수 있게.
+const MAX_ATTEMPTS = 5;
+const LOCKOUT_MS = 5 * 60 * 1000;
+const attempts = new Map();
+
+function attemptKey(req) {
+  return req.ip || req.socket.remoteAddress || 'unknown';
+}
+
+function isLockedOut(key) {
+  const entry = attempts.get(key);
+  if (!entry) return false;
+  if (Date.now() - entry.first > LOCKOUT_MS) {
+    attempts.delete(key);
+    return false;
+  }
+  return entry.count >= MAX_ATTEMPTS;
+}
+
+/** 지금부터 몇 초 뒤에 풀리는지. 잠긴 게 아니면 0. */
+function lockoutRemainingSec(key) {
+  const entry = attempts.get(key);
+  if (!entry) return 0;
+  const remainingMs = LOCKOUT_MS - (Date.now() - entry.first);
+  return remainingMs > 0 ? Math.ceil(remainingMs / 1000) : 0;
+}
+
+function recordFailure(key) {
+  const entry = attempts.get(key);
+  if (!entry || Date.now() - entry.first > LOCKOUT_MS) {
+    attempts.set(key, { count: 1, first: Date.now() });
+  } else {
+    entry.count += 1;
+  }
+}
+
+function requireAuth(req, res, next) {
+  const token = req.cookies?.[config.cookieName];
+  const user = session.verify(token);
+  if (!user) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  req.user = user;
+  next();
+}
+
+/**
+ * 구축 마법사 전용 — 일반 세션 **또는** 관리자 콘솔 세션.
+ *
+ * 빈 장비에서는 일반 세션을 낼 수가 없다. 그 세션은 POST /login 에서만 나고,
+ * 그 라우트는 계정을 MariaDB 의 administrator 테이블에서 찾는데, **MariaDB 를
+ * 세우는 것이 이 마법사의 2단계**다. 들어가야 세울 수 있고 세워야 들어갈 수
+ * 있는 상태였다.
+ *
+ * 관리자 콘솔 세션은 그 고리 밖에 있다 — config.json 만으로 인증되고 DB 를
+ * 쓰지 않는다. 그래서 이 문을 그쪽에도 연다.
+ *
+ * **권한이 넓어지는 것이 아니다.** superAdmin 은 이미 모든 관리자 계정을 만들고
+ * 지울 수 있는, 이 시스템에서 가장 높은 자격이다. 그것이 서버 구축을 못 할
+ * 이유가 없다. 그리고 비밀번호가 없으면 콘솔 자체가 열리지 않으므로
+ * (routes/admin.js 의 fail-closed) 기본값으로 열리는 문이 생기지도 않는다.
+ *
+ * 여는 범위는 /setup* 뿐이다. /overview 나 /services/:name/health 처럼 운영
+ * 데이터를 보는 자리는 그대로 일반 세션만 받는다 — 필요하지 않은 것까지
+ * 넓히지 않는다.
+ *
+ * 콘솔로 들어온 경우 req.user.username 은 'console:<아이디>' 다.
+ * admin_audit_log 가 쓰는 표기와 같게 두어, 확인 기록(setup-attest.json)에도
+ * "누가 눌렀는가" 가 구분되어 남는다.
+ */
+function requireAuthOrConsole(req, res, next) {
+  const user = session.verify(req.cookies?.[config.cookieName]);
+  if (user) {
+    req.user = user;
+    req.viaConsole = false;
+    return next();
+  }
+
+  const admin = session.verifySuper(req.cookies?.[config.superAdmin.cookieName]);
+  if (admin) {
+    req.user = { username: `console:${admin.username}`, displayName: admin.username };
+    req.viaConsole = true;
+    return next();
+  }
+
+  return res.status(401).json({ error: 'unauthorized' });
+}
+
+/**
+ * 구축 마법사의 '자동 실행'(시작 · 중단) 전용 — admin 역할 **또는** 관리자 콘솔 세션.
+ *
+ * 자동 실행은 장비를 바꾸고 sudo 비밀번호를 받는다. 읽기만 하는 viewer 가 누를 일이 아니다.
+ * 다만 **콘솔 세션은 통과시킨다.** 빈 장비의 첫 구축은 일반 로그인이 불가능해(MariaDB 가 아직 없다)
+ * 콘솔로만 들어오는데, 콘솔 세션에는 role 이 없다. role 만 보면 이 시스템에서 가장 높은 자격이 첫 설치를 못 한다.
+ * 콘솔 superAdmin 은 이미 모든 관리자 계정을 만들고 지울 수 있으므로 권한이 넓어지는 것도 아니다.
+ *
+ * requireAuthOrConsole 뒤에 둔다 (req.viaConsole 을 거기서 정한다). role 이 없는 옛 세션 토큰은 막힌다 —
+ * 다시 로그인하면 role 이 실린다 (서비스 추가와 같은 처리).
+ */
+function requireAdminOrConsole(req, res, next) {
+  if (req.viaConsole || req.user?.role === 'admin') return next();
+  return res.status(403).json({
+    error: 'admin_role_required',
+    message: '관리자(admin) 권한이 필요합니다. 계정이 admin 인데도 이 메시지가 나오면 옛 세션이니 다시 로그인하세요.',
+  });
+}
+
+const router = express.Router();
+
+// --- 관리자 콘솔 (로그인 화면의 설정 버튼) ---
+// 일반 로그인 세션과 별개의 인증을 쓰므로 requireAuth 바깥에 둔다.
+router.use('/admin', adminRouter);
+
+// --- 장비 식별 ---
+
+// 로그인 화면이 "어느 장비인지" 를 띄우기 위해 부른다.
+// 로그인 전에 응답해야 하므로 requireAuth 를 걸지 않는다. IP 는 마지막
+// 옥텟만 나가고(services/host.js), 그 외에는 아무것도 드러내지 않는다.
+router.get('/host', (req, res) => {
+  res.json(host.identity());
+});
+
+// --- 인증 ---
+
+// 로그인 아이디는 이메일만 받는다.
+// 지나치게 엄격하면 정상 주소를 막으므로 구조만 확인한다.
+const EMAIL_RE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
+
+router.post('/login', async (req, res) => {
+  const key = attemptKey(req);
+  if (isLockedOut(key)) {
+    const retryAfterSec = lockoutRemainingSec(key);
+    return res.status(429).json({
+      error: 'too_many_attempts',
+      message: `로그인 시도가 너무 많습니다. ${retryAfterSec}초 뒤 다시 시도하세요.`,
+      retryAfterSec,
+    });
+  }
+
+  const { username, password, passwordConfirm } = req.body || {};
+  if (!username || !password) {
+    return res.status(400).json({ error: 'missing_credentials', message: '이메일과 비밀번호를 입력하세요.' });
+  }
+
+  const email = String(username).trim().toLowerCase();
+  if (!EMAIL_RE.test(email)) {
+    return res.status(400).json({ error: 'invalid_email', message: '아이디는 이메일 주소여야 합니다.' });
+  }
+
+  const result = await userStore.authenticate(email, String(password), {
+    ip: key,
+    // 값이 없으면 넘기지 않는다. authenticate() 는 '입력 없음' 과 '빈 문자열' 을 구분한다.
+    passwordConfirm: passwordConfirm === undefined ? undefined : String(passwordConfirm),
+  });
+
+  switch (result.status) {
+    case 'ok': {
+      attempts.delete(key);
+      const { token, expiresAt } = session.issue(result.user);
+      res.cookie(config.cookieName, token, session.cookieOptions(req));
+      log.info(`Login OK: ${result.user.username} from ${key}`);
+      return res.json({ user: result.user, expiresAt });
+    }
+
+    case 'pending': {
+      // 이미 대기 중인 계정으로 다시 로그인해 보는 것은 실패 횟수에 넣지
+      // 않는다 — 자격 증명이 틀린 게 아니다. 다만 **새 승인 요청 행이 방금
+      // 생겼을 때(firstRequest)는 다르다** — 이메일만 바꿔가며 계속 시도하면
+      // administrator 테이블에 무제한으로 행이 쌓일 수 있으므로, 그 경우만
+      // 여기서 같이 센다 (위 "로그인 시도 제한" 설명 참고).
+      if (result.firstRequest) recordFailure(key);
+
+      log.info(`Login pending approval: ${email} from ${key}`);
+
+      // 비밀번호가 저장됐다는 사실을 반드시 알린다. 이걸 모르면 승인이 난 뒤
+      // 로그인이 안 될 때 원인을 찾을 수 없다.
+      let message = '승인 대기 중인 계정입니다. 관리자 승인 후 로그인할 수 있습니다.';
+      if (result.firstRequest) {
+        message =
+          '승인 요청이 등록되었습니다. 방금 입력한 비밀번호가 이 계정의 비밀번호로 저장되었습니다. ' +
+          '관리자 승인 후 로그인할 수 있습니다.';
+      } else if (result.passwordUpdated) {
+        message = '비밀번호를 다시 설정했습니다. 관리자 승인 후 로그인할 수 있습니다.';
+      }
+
+      return res.status(403).json({ error: 'pending_approval', message });
+    }
+
+    // administrator 에 승인 대기 행이 너무 많다 — db-user-store.js 의 전역
+    // 상한. 이 IP 탓이 아닐 수 있으므로(다른 IP들이 흘려 쌓았을 수 있다)
+    // recordFailure 는 부르지 않는다 — 잠그는 것은 "가입 자체를 지금 안
+    // 받는다" 는 서버 쪽 판단이지, 이 요청자의 잘못을 세는 것이 아니다.
+    case 'signup_disabled':
+      log.warn(`Signup rejected — too many pending approvals (attempted ${email} from ${key})`);
+      return res.status(503).json({
+        error: 'signup_disabled',
+        message: '지금은 새 계정 요청을 받지 않습니다. 나중에 다시 시도하거나 관리자에게 문의하세요.',
+      });
+
+    // 비밀번호가 새로 저장되는 경우다. 확인 입력을 받기 전에는 쓰지 않는다.
+    // 자격 증명을 틀린 게 아니므로 실패 횟수에 넣지 않는다.
+    case 'confirm_required':
+      log.info(`Password confirmation required (${result.reason}) for ${email} from ${key}`);
+      return res.status(403).json({
+        error: 'password_confirm_required',
+        reason: result.reason,
+        message:
+          result.reason === 'signup'
+            ? '등록되지 않은 이메일입니다. 여기서 입력한 비밀번호가 이 계정의 비밀번호가 됩니다. 확인을 위해 한 번 더 입력하세요.'
+            : '승인 대기 중인 계정입니다. 비밀번호를 다시 설정하려면 확인을 위해 한 번 더 입력하세요.',
+      });
+
+    case 'confirm_mismatch':
+      return res.status(400).json({
+        error: 'password_mismatch',
+        reason: result.reason,
+        message: '두 비밀번호가 일치하지 않습니다. 다시 입력하세요.',
+      });
+
+    case 'unavailable':
+      log.error(`Login unavailable (DB) for ${email} from ${key}`);
+      return res.status(503).json({
+        error: 'service_unavailable',
+        message: '인증 저장소에 접속할 수 없습니다. 잠시 후 다시 시도하세요.',
+      });
+
+    default:
+      recordFailure(key);
+      log.warn(`Login failed for "${email}" from ${key}`);
+      return res.status(401).json({
+        error: 'invalid_credentials',
+        message: '이메일 또는 비밀번호가 올바르지 않습니다.',
+      });
+  }
+});
+
+router.post('/logout', (req, res) => {
+  res.clearCookie(config.cookieName, { ...session.cookieOptions(req), maxAge: undefined });
+  res.json({ ok: true });
+});
+
+/**
+ * 지금 로그인한 사람이 맞는지 **비밀번호로** 다시 확인한다.
+ *
+ * 서비스 대시보드가 민감한 값(예: janus 의 api_secret)을 화면에 꺼내기 전에
+ * 부릅니다. 세션 쿠키만으로는 "자리를 비운 사이 누가 화면을 봤는가" 를 가릴 수
+ * 없기 때문입니다.
+ *
+ * 세션에서 사용자를 얻으므로 **아무 프로세스나 부를 수 있는 비밀번호 확인기가
+ * 아닙니다** — 그 사람의 유효한 세션 쿠키를 들고 있어야 합니다. 실패는 로그인과
+ * 같은 IP 잠금 통에 넣습니다.
+ */
+router.post('/verify-password', requireAuth, async (req, res) => {
+  const key = attemptKey(req);
+  if (isLockedOut(key)) {
+    const retryAfterSec = lockoutRemainingSec(key);
+    return res.status(429).json({
+      error: 'too_many_attempts',
+      message: `시도가 너무 많습니다. ${retryAfterSec}초 뒤 다시 하세요.`,
+      retryAfterSec,
+    });
+  }
+
+  const password = String(req.body?.password ?? '');
+  if (!password) return res.status(400).json({ error: 'missing_password' });
+
+  // verifyOnly — 확인만 한다. 승인 요청을 만들거나 비밀번호를 고치지 않는다.
+  const result = await userStore.authenticate(req.user.username, password, { ip: key, verifyOnly: true });
+
+  if (result.status === 'ok') {
+    attempts.delete(key);
+    return res.json({ ok: true });
+  }
+  if (result.status === 'unavailable') {
+    return res.status(503).json({ error: 'service_unavailable', message: '인증 저장소에 접속할 수 없습니다.' });
+  }
+
+  recordFailure(key);
+  log.warn(`verify-password failed for ${req.user.username} from ${key}`);
+  return res.status(401).json({ error: 'invalid_password', message: '비밀번호가 맞지 않습니다.' });
+});
+
+router.get('/me', requireAuth, (req, res) => {
+  res.json({
+    // role 은 화면이 "서비스 추가" 버튼을 숨기는 용도일 뿐이다 — 실제 방어선은
+    // POST /wizard/scaffold 의 requireAdminRole (403).
+    user: { username: req.user.username, displayName: req.user.displayName, role: req.user.role },
+    expiresAt: req.user.expiresAt,
+  });
+});
+
+// --- 대시보드 데이터 ---
+
+router.get('/overview', requireAuth, async (req, res, next) => {
+  try {
+    const { server, services: all, source } = loadServices();
+
+    // manager 자신은 상태판에 올리지 않는다. 이 화면이 보인다는 것이 곧 manager 가 떠 있다는 뜻이라
+    // "정상" 줄이 아무것도 알려 주지 않고, 자기 /health 를 자기가 묻는 것도 의미가 없다.
+    // 죽었을 때는 이 화면 자체가 안 열린다. 개별 조회(/services/manager)는 그대로 된다.
+    const registered = all.filter((service) => service.name !== 'manager');
+
+    const [checks, pm2Map, nginxStatus, certStatus] = await Promise.all([
+      health.checkAll(registered),
+      pm2.list(),
+      nginx.status(),
+      // 인증서는 nginx 가 내미는 것을 본다. 포트·SNI 는 nginx-stack.conf 값이다.
+      cert.status(server),
+    ]);
+
+    // 지금 쓰지 않기로 한(선택 단계뿐인) 서비스가 안 떠 있는 것은 고장이 아니다 — "중단" 대신 "선택".
+    // 예: LAN 전용이면 coturn 과 그 대시보드. 떠 있으면 평소처럼 보인다.
+    const optional = setup.optionalServices();   // 이름 → 왜 필요하지 않은가
+    const optionalReason = (name) => {
+      for (const [n, reason] of optional) if (name === n || name.startsWith(`${n}-`)) return reason;
+      return null;
+    };
+
+    const services = registered.map((service, i) => {
+      const reason = optionalReason(service.name);
+      const optionalOff = Boolean(reason) && checks[i].status !== 'up';
+      return {
+        ...service,
+        health: optionalOff
+          ? { ...checks[i], status: 'optional', rawStatus: checks[i].status, optionalReason: reason }
+          : checks[i],
+        pm2: pm2Map.get(service.name) || null,
+        // 지울 수 있는 서비스인가 — **plug-in 만** (폴더를 알고, 패키지에 든 것이 아니면). 서버가 정하고 화면은
+        // 이 값을 따른다 (services/remove.js).
+        removable: service.track === 'plugin' && Boolean(service.group) && !removal.PROTECTED.has(service.group),
+      };
+    });
+
+    const summary = {
+      total: services.length,
+      up: services.filter((s) => s.health.status === 'up').length,
+      degraded: services.filter((s) => s.health.status === 'degraded').length,
+      down: services.filter((s) => s.health.status === 'down').length,
+      unknown: services.filter((s) => s.health.status === 'unknown').length,
+      optional: services.filter((s) => s.health.status === 'optional').length,
+    };
+
+    res.json({
+      nginx: nginxStatus,
+      cert: certStatus,
+      server,
+      services,
+      summary,
+      source,
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 장비 자원(CPU · RAM · 저장소 · 네트워크)과 최근 10분 기록. 값은 sampler 가 5초마다 재 둔 것이라
+// 요청이 많아도 /proc 을 더 읽지 않는다. pm2 앱별 사용량만 요청 때 pm2 에 묻는다.
+router.get('/metrics', requireAuth, async (req, res, next) => {
+  try {
+    const snap = metrics.snapshot();
+    if (!snap) return res.status(503).json({ error: 'metrics_unavailable', message: '자원 사용량을 읽지 못했습니다.' });
+
+    const pm2Map = await pm2.list();
+    const processes = [...pm2Map.values()].map((p) => ({
+      name: p.name,
+      status: p.status,
+      cpu: p.cpu,
+      memoryBytes: p.memoryMb != null ? p.memoryMb * 1024 * 1024 : null,
+      restarts: p.restarts,
+      uptimeSec: p.uptimeSec,
+    }));
+
+    res.json({ ...snap, pm2: processes });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- 설치본 점검 (저장소 뿌리의 ./check-all.sh 를 줄 단위로) ---
+
+// 점검 줄의 목록. 판정은 하지 않는다.
+router.get('/checks', requireAuth, async (req, res, next) => {
+  try {
+    res.json({ checks: await checks.listWithApply() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 한 줄을 돌린다. 읽기 전용이지만 프로세스를 띄우므로 GET 이 아니라 POST 다.
+// 화면은 번호만 보낸다 — 명령은 check-all.sh 의 표에서만 나온다.
+router.post('/checks/:id/run', requireAuth, async (req, res, next) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 0) {
+    return res.status(400).json({ error: 'invalid_id', message: '점검 번호가 올바르지 않습니다.' });
+  }
+  try {
+    res.json(await checks.runOne(id));
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: 'check_failed', message: err.message });
+    next(err);
+  }
+});
+
+// --- 점검 줄의 '자동으로 반영' ---
+//
+// 돌리는 것은 새로 만든 명령이 아니라 **구축 마법사의 자동 실행**(services/setup-auto.js)이다. 점검 줄은
+// check-all.sh 의 표가 가리키는 마법사 단계 하나에 이어지고, 그 단계의 AUTO 표에 박힌 명령만 돈다.
+// 화면이 보내는 것은 점검 번호와 sudo 비밀번호뿐이다.
+//
+// 마법사 쪽 라우트(/setup/auto)와 일부러 따로 둔다. 마법사는 구축 중에 평문 HTTP 로 열 수 있게
+// (bootstrap.sh --expose-http) 문서에 정해져 있어서 거기에 HTTPS 를 강제하면 그 흐름이 깨진다.
+// 이 경로는 **운영 중인 장비**를 고치는 자리라 더 좁게 잡는다:
+//   · HTTPS 로 온 요청만 — sudo 비밀번호가 평문으로 지나가지 않게 서버가 막는다 (화면 경고에 맡기지 않는다)
+//   · admin 역할만 (서비스 추가와 같은 기준)
+//   · JSON 본문만 — 다른 오리진의 폼 전송이 쿠키를 싣고 두드리지 못하게
+
+/** HTTPS 로 온 요청인가. nginx 가 X-Forwarded-Proto 를 넘기고 trust proxy 가 켜져 있어 req.secure 가 그것이다. */
+function isSecureTransport(req) {
+  if (req.secure) return true;
+  // 127.0.0.1:포트 로 SSH 터널을 타고 백엔드에 직접 붙은 경우. nginx 를 거치면 X-Forwarded-For 가 반드시 붙으므로
+  // 그것이 없는 루프백 연결만 직접 붙은 것으로 본다 (백엔드는 루프백에만 묶여 있어 밖에서는 닿지 않는다).
+  const peer = req.socket?.remoteAddress;
+  const loopback = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
+  return loopback && !req.headers['x-forwarded-for'];
+}
+
+function requireSecureTransport(req, res, next) {
+  if (isSecureTransport(req)) return next();
+  return res.status(403).json({
+    error: 'https_required',
+    message: 'HTTPS 로 접속했을 때만 반영할 수 있습니다. sudo 비밀번호가 평문으로 오가지 않게 막았습니다 — https:// 주소로 다시 여세요.',
+  });
+}
+
+async function applyTarget(req, res) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 0) {
+    res.status(400).json({ error: 'invalid_id', message: '점검 번호가 올바르지 않습니다.' });
+    return null;
+  }
+  const check = await checks.find(id);
+  const step = check && checks.stepFor(check);
+  if (!step) {
+    res.status(404).json({ error: 'not_applicable', message: '이 줄은 화면에서 반영하지 않습니다.' });
+    return null;
+  }
+  return { check, step };
+}
+
+router.post('/checks/:id/apply', requireAuth, requireAdminRole, requireSecureTransport, async (req, res, next) => {
+  if (!req.is('application/json')) {
+    return res.status(415).json({ error: 'json_required', message: 'JSON 으로 보내야 합니다.' });
+  }
+  try {
+    const t = await applyTarget(req, res);
+    if (!t) return undefined;
+    // 반영 전에 그 서비스가 받아 낼 수 있는 상태인지 서버가 직접 확인한다 (checks.js CHECK_ONLY 의 gate).
+    const g = await checks.gate(t.step);
+    if (!g.ok) return res.status(409).json({ error: 'precondition_failed', message: g.message });
+    const job = await setupAutoSvc.start(t.step, {
+      sudoPassword: req.body?.sudoPassword,
+      by: req.user.username,
+    });
+    return res.status(202).json(job);
+  } catch (err) {
+    if (err instanceof setupAutoSvc.AutoError) {
+      return res.status(err.code === 'busy' ? 409 : 400).json({ error: err.code, message: err.message });
+    }
+    return next(err);
+  }
+});
+
+// 진행 읽기. 비밀번호는 오가지 않지만 로그에 무엇이 찍혔는지는 admin 만 본다.
+router.get('/checks/:id/apply', requireAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    const t = await applyTarget(req, res);
+    if (!t) return undefined;
+    const from = Math.max(0, parseInt(req.query.from, 10) || 0);
+    return res.json({ job: setupAutoSvc.status(t.step.id, from), runningStepId: setupAutoSvc.runningStepId() });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.post('/checks/:id/apply/cancel', requireAuth, requireAdminRole, requireSecureTransport, async (req, res, next) => {
+  try {
+    const t = await applyTarget(req, res);
+    if (!t) return undefined;
+    return res.json({ cancelled: setupAutoSvc.cancel(t.step.id) });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// --- 중앙 감시 (webservice-central-server 에 상태를 보고하는 내장 에이전트) ---
+//
+// 읽기는 로그인한 누구나, 등록·지금 보내기는 admin. 등록 코드는 1회용 자격이라 HTTPS 로만 받는다.
+// 응답에는 siteSecret 을 싣지 않는다 (services/central.js status).
+const CENTRAL_ERROR_STATUS = { invalid_code: 400, rate_limited: 429, network: 502, server_error: 502, invalid_response: 502, invalid_config: 400, not_configured: 409 };
+
+async function sendCentralError(res, err, next) {
+  if (await central.isAgentError(err)) {
+    return res.status(CENTRAL_ERROR_STATUS[err.code] || 500).json({ error: err.code, message: err.message });
+  }
+  return next(err);
+}
+
+router.get('/central', requireAuth, async (req, res, next) => {
+  try {
+    res.json(await central.status());
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/central/enroll', requireAuth, requireAdminRole, requireSecureTransport, async (req, res, next) => {
+  if (!req.is('application/json')) {
+    return res.status(415).json({ error: 'json_required', message: 'JSON 으로 보내야 합니다.' });
+  }
+  try {
+    const code = typeof req.body?.code === 'string' ? req.body.code : '';
+    await central.enroll(code);
+    log.info(`중앙 감시 등록 (${req.user.username})`);
+    return res.json(await central.status());
+  } catch (err) {
+    return sendCentralError(res, err, next);
+  }
+});
+
+router.post('/central/send', requireAuth, requireAdminRole, async (req, res, next) => {
+  try {
+    await central.sendNow();
+    res.json(await central.status());
+  } catch (err) {
+    sendCentralError(res, err, next);
+  }
+});
+
+// --- 구축 마법사 (docs/guide/install.md '8. 마법사가 일하는 방식') ---
+
+// 단계 정의 + 각 단계의 마지막 점검 결과. 결과는 메모리에만 있으므로 재기동
+// 뒤에는 비어 있고, 화면이 들어오면서 다시 점검한다.
+router.get('/setup', requireAuthOrConsole, (req, res) => {
+  res.json(setup.overview());
+});
+
+// 그 단계의 점검 스크립트를 돌린다. 무엇을 돌릴지는 services/setup.js 의 표가
+// 정한다 — :stepId 는 그 표에서 한 줄을 고르는 데만 쓴다.
+router.post('/setup/check/:stepId', requireAuthOrConsole, async (req, res, next) => {
+  const step = setup.find(req.params.stepId);
+  if (!step) return res.status(404).json({ error: 'unknown_step' });
+
+  // manualOnly 단계는 돌릴 점검이 없다. 사람의 확인만 받는다 (아래 attest).
+  if (!step.check) {
+    return res.status(400).json({ error: 'manual_only', message: '사람이 확인하는 단계입니다.' });
+  }
+
+  try {
+    res.json(await setup.check(step.id));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// admin 역할(또는 콘솔 세션)만 시작·중단할 수 있다. **HTTPS 는 여기서 강제하지 않는다** — 구축 중 평문으로 여는
+// `bootstrap.sh --expose-http` 흐름이 문서에 있고, 구축이 끝난 장비는 nginx 80 이 전부 https 로 넘겨 평문 요청이 백엔드에
+// 닿지 않는다. HTTPS 를 강제하는 쪽은 운영 중 장비를 고치는 점검 화면의 반영(/checks/:id/apply)이다.
+// "자동으로 실행" — 사용자가 단계마다 고른 경우에만 호출된다. 돌리는 것은 services/setup.js 의
+// AUTO 표에 박힌 명령뿐이고, 요청이 정하는 것은 :stepId 와 sudo 비밀번호뿐이다
+// (경계는 services/setup-auto.js 머리말). JSON 본문만 받는다 — 다른 오리진의 폼 전송이
+// 쿠키를 실어 이 문을 두드리지 못하게 하려는 것이다.
+router.post('/setup/auto/:stepId', requireAuthOrConsole, requireAdminOrConsole, async (req, res, next) => {
+  const step = setup.find(req.params.stepId);
+  if (!step) return res.status(404).json({ error: 'unknown_step' });
+  if (!req.is('application/json')) {
+    return res.status(415).json({ error: 'json_required', message: 'JSON 으로 보내야 합니다.' });
+  }
+
+  try {
+    const job = await setupAuto.start(step, {
+      sudoPassword: req.body?.sudoPassword,
+      dbAdminUser: req.body?.dbAdminUser,
+      dbAdminPassword: req.body?.dbAdminPassword,
+      by: req.user.username,
+    });
+    res.status(202).json(job);
+  } catch (err) {
+    if (err instanceof setupAuto.AutoError) {
+      const status = err.code === 'busy' ? 409 : 400;
+      return res.status(status).json({ error: err.code, message: err.message });
+    }
+    next(err);
+  }
+});
+
+// 진행 읽기. from 은 이미 받은 줄 수 — 그 뒤만 돌려준다.
+router.get('/setup/auto/:stepId', requireAuthOrConsole, (req, res) => {
+  const step = setup.find(req.params.stepId);
+  if (!step) return res.status(404).json({ error: 'unknown_step' });
+  const from = Math.max(0, parseInt(req.query.from, 10) || 0);
+  res.json({ job: setupAuto.status(step.id, from), runningStepId: setupAuto.runningStepId() });
+});
+
+router.post('/setup/auto/:stepId/cancel', requireAuthOrConsole, requireAdminOrConsole, (req, res) => {
+  const step = setup.find(req.params.stepId);
+  if (!step) return res.status(404).json({ error: 'unknown_step' });
+  res.json({ cancelled: setupAuto.cancel(step.id) });
+});
+
+// 그 단계의 파라미터를 서비스의 settings.ini 에 쓴다. **값만 쓴다** — 설정
+// 파일을 만지지도, 서비스를 재기동하지도 않는다. 반영은 사람이 --apply 로 한다.
+router.put('/setup/settings/:stepId', requireAuthOrConsole, (req, res, next) => {
+  const step = setup.find(req.params.stepId);
+  if (!step) return res.status(404).json({ error: 'unknown_step' });
+  if (!step.settings) {
+    return res.status(400).json({ error: 'no_settings', message: '파라미터를 받는 단계가 아닙니다.' });
+  }
+
+  try {
+    const result = setup.saveSettings(step, req.body || {});
+    // 형식이 틀리면 아무것도 쓰지 않고 어느 항목이 왜 틀렸는지 돌려준다.
+    if (!result.ok) return res.status(400).json({ error: 'invalid_settings', errors: result.errors });
+    res.json({ stepId: step.id, ...result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 사람의 확인을 기록한다. **통과로 바꾸는 것이 아니라 기록하는 것이다** —
+// 점검이 problem 이면 확인 기록이 있어도 problem 으로 남는다 (services/setup.js).
+router.post('/setup/attest/:stepId', requireAuthOrConsole, (req, res) => {
+  const step = setup.find(req.params.stepId);
+  if (!step) return res.status(404).json({ error: 'unknown_step' });
+  if (!step.attest) {
+    return res.status(400).json({ error: 'not_attestable', message: '사람의 확인을 받는 단계가 아닙니다.' });
+  }
+
+  // 확인 대상(포워딩 포트 목록 등)을 함께 남긴다. 나중에 그것이 바뀌면 이
+  // 확인은 낡은 것이 되고, 마법사가 다시 묻는다 (services/setup.js).
+  const subject = setup.resolveAttest(step)?.subject || null;
+  const record = attest.record(step.id, { by: req.user.username, note: req.body?.note, subject });
+  res.json({ stepId: step.id, attestation: record });
+});
+
+// 확인 기록을 지운다. 되돌렸거나 잘못 눌렀을 때 쓴다.
+router.delete('/setup/attest/:stepId', requireAuthOrConsole, (req, res) => {
+  const step = setup.find(req.params.stepId);
+  if (!step) return res.status(404).json({ error: 'unknown_step' });
+
+  const removed = attest.remove(step.id);
+  res.json({ stepId: step.id, removed });
+});
+
+// RTP·시그널링·내부 HTTP 포트 전체 지도. 공유기를 바꾸거나 포워딩을 다시
+// 확인할 때 보는 화면이다 (docs/ports.md '7. 포트 지도 화면이 읽는 곳').
+router.get('/port-map', requireAuth, (req, res, next) => {
+  try {
+    res.json(portMap.build());
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- 문서 (README.md, docs/**/*.md 등 git 이 추적하는 .md 전부) ---
+//
+// 목록·내용 둘 다 docs.listPaths() 가 매번 다시 만드는 git 추적 목록을
+// 기준으로 한다 — 클라이언트가 보낸 경로를 그 목록에 있는지만 확인하고
+// 읽으므로, 목록에 없는 경로(상위 디렉토리 접근 포함)는 애초에 못 읽는다.
+router.get('/docs', requireAuth, async (req, res, next) => {
+  try {
+    res.json({ files: await docs.list() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/docs/content', requireAuth, async (req, res, next) => {
+  try {
+    const result = await docs.getContent(String(req.query.path || ''));
+    res.json(result);
+  } catch (err) {
+    if (err instanceof docs.NotFoundError) return res.status(404).json({ error: 'not_found', message: err.message });
+    next(err);
+  }
+});
+
+// --- 설치 가이드 PDF (로그인 뒤에만) ---
+//
+// 소개 페이지(intro)는 공개라 설치 방법을 싣지 않는다. 가이드는 세션이 있는 사람에게만
+// 내려 준다. 이름은 guides.list() 가 디렉터리를 읽어 만든 목록에 있는지만 확인하고 경로로
+// 바꾼다 — 클라이언트가 보낸 값을 그대로 파일시스템에 넘기지 않는다.
+router.get('/guides', requireAuth, async (req, res, next) => {
+  try {
+    res.json({ files: await guides.list() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/guides/download', requireAuth, async (req, res, next) => {
+  try {
+    const name = String(req.query.name || '');
+    const file = await guides.resolve(name);
+    if (!file) return res.status(404).json({ error: 'not_found', message: `가이드 목록에 없습니다: ${name}` });
+    log.info(`guides: ${req.user.username} 가 ${name} 을 내려받았습니다`);
+    // attachment — 브라우저가 열지 않고 저장하게 한다. 로그인한 사람의 응답이라 공유 캐시에 남기지 않는다.
+    res.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+    res.download(file, name, (err) => {
+      if (err && !res.headersSent) next(err);
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- 변경 이력 (git log) ---
+//
+// scope 는 화면에서 고르는 값만 받는다 — docs / services/<이름>. 그 밖의
+// 값은 changelog.recent() 가 400 으로 거절한다.
+router.get('/changelog', requireAuth, async (req, res, next) => {
+  try {
+    const commits = await changelog.recent({ scope: req.query.scope, limit: req.query.limit });
+    res.json({ commits, scopes: changelog.scopes() });
+  } catch (err) {
+    if (err.code === 'INVALID_SCOPE') return res.status(400).json({ error: 'invalid_scope', message: err.message });
+    next(err);
+  }
+});
+
+/**
+ * 서비스 하나의 선언값 — 헬스 검사 없이.
+ *
+ * 다른 서비스의 대시보드를 Manager 안에 담는 화면(web ServiceView)이 쓴다.
+ * 그 화면에 필요한 것은 dashboardUrl 하나인데, /overview 는 모든 서비스에
+ * 헬스를 물어 죽은 것이 있으면 타임아웃(3초)만큼 기다린다. 링크 하나 열자고
+ * 그 시간을 쓸 이유가 없다.
+ */
+router.get('/services/:name', requireAuth, (req, res, next) => {
+  try {
+    const { services } = loadServices();
+    const service = services.find((s) => s.name === req.params.name);
+    if (!service) return res.status(404).json({ error: 'not_found' });
+
+    const { name, group, track, location, dashboardUrl } = service;
+    res.json({ name, group, track, location, dashboardUrl });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/services/:name/health', requireAuth, async (req, res, next) => {
+  try {
+    const { services } = loadServices();
+    const service = services.find((s) => s.name === req.params.name);
+    if (!service) return res.status(404).json({ error: 'not_found' });
+
+    res.json({ name: service.name, health: await health.checkOne(service) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- 서비스 추가 마법사 ---
+//
+// 읽기 전용 하위 경로는 로그인한 관리자 누구나 쓸 수 있다(점검·명령 미리보기
+// 자체는 이미 다른 곳에서도 허용하는 위험도다). 디스크에 새 디렉터리를 만드는
+// POST /wizard/scaffold 만 routes/wizard.js 안에서 role 을 한 번 더 본다.
+router.use('/wizard', requireAuth, wizardRouter);
+
+module.exports = { router, requireAuth };
