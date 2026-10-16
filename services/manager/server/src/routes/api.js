@@ -3,7 +3,7 @@ const config = require('../config');
 const log = require('../logger');
 const session = require('../auth/session');
 const { createUserStore } = require('../auth/user-store');
-const { loadServices } = require('../services/registry');
+const { loadServices, loadEcosystem } = require('../services/registry');
 const health = require('../services/health');
 const pm2 = require('../services/pm2');
 const nginx = require('../services/nginx');
@@ -413,7 +413,9 @@ router.get('/metrics', requireAuth, async (req, res, next) => {
     if (!snap) return res.status(503).json({ error: 'metrics_unavailable', message: '자원 사용량을 읽지 못했습니다.' });
 
     const pm2Map = await pm2.list();
-    const processes = [...pm2Map.values()].map((p) => ({
+    // 이 저장소가 선언한 앱만 보여 준다. pm2 에 같이 떠 있는 다른 프로젝트의 앱은 대상이 아니다.
+    const declaredApps = new Set(loadEcosystem(config.ecosystemPath).map((a) => a.name));
+    const processes = [...pm2Map.values()].filter((p) => declaredApps.has(p.name)).map((p) => ({
       name: p.name,
       status: p.status,
       cpu: p.cpu,

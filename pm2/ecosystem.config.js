@@ -337,6 +337,16 @@ function notBuiltYet(app) {
 const WIZARD_SCOPE = process.argv.includes('--check-json');
 const WIZARD_OWNS = 'manager';
 
+/**
+ * 점검 대상은 **이 저장소가 선언한 앱**뿐이다.
+ *
+ * pm2 에는 이 저장소와 상관없는 앱이 같이 떠 있을 수 있다(같은 장비에서 돌리는 다른
+ * 프로젝트). 그런 앱은 선언에 없다는 이유로 문제로 세지 않고, 재부팅 목록에서도 말하지
+ * 않고, 이름도 찍지 않는다. 설치 중(--check-json)에는 거기서 더 좁혀 manager 만 본다.
+ * 선언은 했지만 enabled = false 로 끈 앱은 선언한 앱이므로 범위 안이다.
+ */
+const inScope = (entry) => !WIZARD_SCOPE || path.basename(entry.serviceDir) === WIZARD_OWNS;
+
 function checkRunning(entries) {
   const declared = entries.filter((e) => e.enabled).map((e) => e.app);
   const outOfScope = new Set(
@@ -352,6 +362,7 @@ function checkRunning(entries) {
   }
 
   const byName = new Map(list.map((p) => [p.name, p]));
+  const scopeNames = new Set(entries.filter(inScope).map((e) => e.app.name));
   let drift = 0;
 
   const unbuilt = new Set();
@@ -387,21 +398,21 @@ function checkRunning(entries) {
     }
   }
 
-  // 선언에 없는데 돌고 있는 것. 껐다고 적어 둔 앱이 그대로 떠 있는 경우다.
-  const declaredNames = new Set(declared.map((a) => a.name));
-  for (const proc of list) {
-    if (declaredNames.has(proc.name)) continue;
-    judge('pending', `${proc.name} — 돌고 있는데 선언에 없습니다 (pm2 delete ${proc.name} && pm2 save 하거나 선언을 되살리세요)`);
+  // 껐다고(enabled = false) 선언해 둔 앱이 그대로 떠 있는 경우. 선언하지 않은 앱은 보지 않는다.
+  for (const entry of entries.filter((e) => !e.enabled && inScope(e))) {
+    if (!byName.has(entry.app.name)) continue;
+    judge('pending', `${entry.app.name} — 껐다고 선언돼 있는데 돌고 있습니다 (pm2 delete ${entry.app.name} && pm2 save 하거나 선언을 되살리세요)`);
     drift += 1;
   }
 
-  if (!drift) judge('ok', `실행 중 ${list.length}개 — 선언대로 돌고 있습니다`);
+  const checkedCount = declared.length - unbuilt.size;
+  if (!drift) judge('ok', `선언된 앱 ${checkedCount}개 — 선언대로 돌고 있습니다`);
 
-  checkSaved(declared.filter((a) => !unbuilt.has(a.name)), list, declaredNames);
+  checkSaved(declared.filter((a) => !unbuilt.has(a.name)), list, scopeNames);
 }
 
 /** 재부팅하면 살아날 목록. pm2 save 를 잊으면 여기만 낡는다. */
-function checkSaved(declared, list, allDeclaredNames) {
+function checkSaved(declared, list, scopeNames) {
   const dump = pm2Dump();
   if (!dump) {
     judge('pending', `재부팅 목록이 없습니다 (${path.join(PM2_HOME, 'dump.pm2')}) — pm2 save 를 한 번도 하지 않았습니다`);
@@ -410,7 +421,7 @@ function checkSaved(declared, list, allDeclaredNames) {
 
   const running = new Set(list.map((p) => p.name));
   const saved = new Map(dump.map((a) => [a.name, a]));
-  const declaredNames = allDeclaredNames || new Set(declared.map((a) => a.name));
+  const scope = scopeNames || new Set(declared.map((a) => a.name));
   const checked = new Set(declared.map((a) => a.name));
 
   // 돌고 있는데 재부팅 목록에 없다 = 띄우고 pm2 save 를 잊었다.
@@ -418,7 +429,8 @@ function checkSaved(declared, list, allDeclaredNames) {
   // 거기에 대고 "pm2 save 를 하세요" 라고 하면 원하지 않는 앱을 굳혀 버린다.
   const notSaved = [...running].filter((n) => !saved.has(n) && checked.has(n));
   // 재부팅 목록에는 있는데 지금 안 돌고 있다 = 지우고 pm2 save 를 잊었다.
-  const ghosts = [...saved.keys()].filter((n) => !running.has(n));
+  // 범위 밖의 앱(선언하지 않은 pm2 앱)이 멈춰 있거나 저장돼 있는 것은 말하지 않는다.
+  const ghosts = [...saved.keys()].filter((n) => scope.has(n) && !running.has(n));
 
   let mismatch = 0;
   if (notSaved.length) {
@@ -453,7 +465,7 @@ function checkSaved(declared, list, allDeclaredNames) {
       ? `재부팅하면 옛 설정으로 뜹니다: ${stale.join(', ')} — 먼저 위의 '선언과 다르게 돌고 있습니다' 를 고치세요 (${blocked.join(', ')}). 지금 pm2 save 를 하면 어긋난 설정이 그대로 굳습니다`
       : `재부팅하면 옛 설정으로 뜹니다: ${stale.join(', ')} — pm2 save 를 하세요`);
   } else {
-    judge('ok', `재부팅 목록도 같습니다 (${dump.length}개, pm2 save 됨)`);
+    judge('ok', `재부팅 목록도 같습니다 (선언된 앱 ${[...saved.keys()].filter((n) => scope.has(n)).length}개, pm2 save 됨)`);
   }
 }
 

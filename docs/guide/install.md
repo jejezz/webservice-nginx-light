@@ -429,6 +429,8 @@ cd services/manager/server && npm run admin -- approve you@example.com
 
 **`pm2.apps`.** pm2 는 이미 5절에서 깔았으므로 `install_pm2.sh install` 은 "이미 설치됨" 으로
 멈춥니다. 점검은 선언 · 실행 중 · 재부팅 목록(`~/.pm2/dump.pm2`) 셋을 견줍니다.
+**설치 중에는 manager 하나만 점검 대상**이고, 같은 pm2 에 떠 있는 이 저장소가 선언하지 않은
+앱은 어떤 점검에서도 보지 않습니다(그 앱들이 있어도 이 단계는 통과합니다).
 
 > **pm2 는 설정 파일을 다시 읽지 않습니다.** `pm2 restart <이름>` 이나 재부팅은 처음 띄울
 > 때 저장된 환경을 그대로 씁니다. 앱의 `*.config.js` 나 거기서 읽는 `*.local.js` 의 환경

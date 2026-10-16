@@ -60,6 +60,25 @@ die()  { echo "오류: $*" >&2; exit 1; }
 # 읽는 쪽만 따로 둔다.
 declare -A GROUP_WANTED_BY=()
 
+# ── 이 저장소가 선언한 앱의 이름 ──────────────────────────────────
+#
+# 점검 대상은 선언한 앱뿐이다. 같은 pm2 데몬에 다른 프로젝트의 앱이 같이 떠 있을 수 있는데,
+# 그것들은 보고에 싣지 않고 이름도 찍지 않는다. 선언을 읽지 못하면 빈 목록이 되고, 그러면
+# do_restart 는 "모르는 앱이 있다" 로 보아 거부한다 (안전한 쪽).
+declared_apps() {
+    node -e 'try{for(const a of (require(process.argv[1]).apps||[]))console.log(a.name)}catch(e){}' "$ECOSYSTEM" 2>/dev/null || true
+}
+
+# 선언하지 않은 pm2 앱의 개수. pm2 데몬을 내리면 이 앱들도 같이 내려간다.
+undeclared_count() {
+    pm2 jlist 2>/dev/null | DECLARED="$(declared_apps)" node -e '
+      let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+        let a=[];try{a=JSON.parse(s)}catch(e){}
+        const want=new Set((process.env.DECLARED||"").split("\n").filter(Boolean));
+        console.log(a.filter(p=>!want.has(p.name)).length);
+      });' 2>/dev/null || echo 0
+}
+
 collect_groups() {
     local file app_name enabled groups
     while IFS= read -r file; do
@@ -178,10 +197,11 @@ report() {
             *)      warn "$(printf '%-24s' "$name") ${status} (재시작 ${restarts}회) — pm2 logs ${name}"
                     problems=$((problems + 1)) ;;
         esac
-    done < <(pm2 jlist 2>/dev/null | node -e '
+    done < <(pm2 jlist 2>/dev/null | DECLARED="$(declared_apps)" node -e '
       let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
         let a=[];try{a=JSON.parse(s)}catch(e){}
-        for (const p of a) console.log([p.name,(p.pm2_env||{}).status,(p.pm2_env||{}).restart_time].join("|"));
+        const want=new Set((process.env.DECLARED||"").split("\n").filter(Boolean));
+        for (const p of a) if (want.has(p.name)) console.log([p.name,(p.pm2_env||{}).status,(p.pm2_env||{}).restart_time].join("|"));
       });' 2>/dev/null || true)
 
     info ""
@@ -213,6 +233,19 @@ wrap_in_sg() {
 do_restart() {
     [[ -f "$ECOSYSTEM" ]] || die "선언이 없습니다: ${ECOSYSTEM}"
     command -v pm2 >/dev/null 2>&1 || die "pm2 가 없습니다. pm2/install_pm2.sh 를 먼저 보세요."
+
+    # 데몬을 내리면 같은 데몬의 다른 앱도 같이 내려가고, 이어지는 pm2 save 가 그 앱들을
+    # 재부팅 목록에서 지운다. 여기서 다시 띄우는 것은 선언한 앱뿐이라 되살릴 수 없다.
+    local extra; extra="$(undeclared_count)"
+    if [[ "${extra:-0}" -gt 0 ]]; then
+        warn "이 저장소가 선언하지 않은 pm2 앱이 ${extra}개 더 떠 있습니다."
+        info "pm2 데몬을 내리면 그 앱들도 같이 내려가고, pm2 save 로 재부팅 목록에서도 빠집니다."
+        info "이 스크립트는 선언한 앱만 다시 띄우므로 되살아나지 않습니다. 중단합니다."
+        info ""
+        info "선언한 앱만 다시 띄우려면 데몬은 두고 앱을 지정해 재시작하세요:"
+        info "  pm2 restart <앱 이름>        (데몬의 그룹은 바뀌지 않습니다)"
+        exit 1
+    fi
 
     local miss; mapfile -t miss < <(missing_in_shell)
     local cmd; cmd="$(start_command)"

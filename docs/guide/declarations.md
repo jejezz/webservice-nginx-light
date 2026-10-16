@@ -288,7 +288,7 @@ groups = kamailio
 
 ```bash
 pm2/restart.sh            # 데몬과 앱이 필요한 그룹을 갖췄는지 본다
-pm2/restart.sh --restart  # 갖춰서 데몬째 다시 띄우고 확인한다
+pm2/restart.sh --restart  # 갖춰서 데몬째 다시 띄우고 확인한다 (선언하지 않은 pm2 앱이 있으면 거부)
 ```
 
 `pm2 restart <앱>` 이나 `npm run restart` 로는 바뀌지 않습니다.
