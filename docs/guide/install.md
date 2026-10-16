@@ -183,16 +183,18 @@ sudo apt update && apt-cache policy mariadb-server | sed -n 1,4p     # Candidate
 터미널이 아니거나 스크롤 영역을 지원하지 않는 터미널이면 `--check` 보고서로
 대신합니다.
 
-위 칸의 한 줄 요약은 `node · npm · pm2 · 의존성 · 화면 · 비밀번호 · 기동` 이고, 칠
-명령은 차례로 셋뿐입니다.
+위 칸의 한 줄 요약은 `node · npm · pm2 · nginx · MariaDB · 의존성 · 화면 · 비밀번호 · 기동`
+이고, 칠 명령은 차례로 다섯입니다.
 
 | 순서 | 명령 | 하는 일 |
 |---|---|---|
 | 1 | `sudo ./install-node.sh --apply` | NodeSource 에서 node 20 설치 (4절) |
 | 2 | `./pm2/install_pm2.sh install` | pm2 전역 설치 (5절) |
-| 3 | `./bootstrap.sh --apply` | manager 의존성 · 화면 빌드 · 관리자 콘솔 비밀번호 · pm2 기동 (6절) |
+| 3 | `sudo apt-get install -y nginx` | nginx 설치만 — 라우트·인증서 설정은 마법사 (9절) |
+| 4 | `sudo ./database/install_mariadb.sh install` | MariaDB 설치만 — DB·계정은 마법사 (2.1 의 저장소를 먼저) |
+| 5 | `./bootstrap.sh --apply` | manager 의존성 · 화면 빌드 · 관리자 콘솔 비밀번호 · pm2 기동 (6절) |
 
-셋이 끝나면 위 칸이 마법사 주소로 바뀝니다.
+다섯이 끝나면 위 칸이 마법사 주소로 바뀝니다.
 
 ---
 
