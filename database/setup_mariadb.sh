@@ -152,7 +152,8 @@ resolve_rel() { resolve_rel_from "$SCRIPT_DIR" "$1"; }
 
 run_sql() {
     if $DRY_RUN; then
-        echo "    [dry-run] $1"
+        # 출력에 비밀번호가 남지 않게 IDENTIFIED BY '...' 를 가린다.
+        echo "    [dry-run] $(printf '%s' "$1" | sed -E "s/(IDENTIFIED BY )'([^']|'')*'/\1'***'/g")"
         return 0
     fi
     mdb -e "$1"
@@ -511,6 +512,13 @@ resolve_password() {
         return
     fi
 
+    # dry-run 은 아무것도 바꾸지 않는다 — 비밀번호 파일도 만들지 않고, 값도 만들지 않는다.
+    if $DRY_RUN; then
+        echo "    [dry-run] 새 비밀번호를 만들 예정입니다: ${generated}" >&2
+        printf '%s' '(dry-run)'
+        return
+    fi
+
     mkdir -p "$SECRETS_DIR"
     chmod 700 "$SECRETS_DIR"
     local pw
@@ -610,6 +618,13 @@ secret_password() {
     local generated="${SECRETS_DIR}/${user}.pw"
     if [[ -f "$generated" ]]; then
         head -1 "$generated" | tr -d '\n'
+        return
+    fi
+
+    # dry-run 은 아무것도 바꾸지 않는다 — 비밀번호 파일도 만들지 않고, 값도 만들지 않는다.
+    if $DRY_RUN; then
+        echo "    [dry-run] 새 비밀번호를 만들 예정입니다: ${generated}" >&2
+        printf '%s' '(dry-run)'
         return
     fi
 
