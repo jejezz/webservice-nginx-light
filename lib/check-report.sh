@@ -7,13 +7,13 @@
 # ── 쓰는 법 ────────────────────────────────────────────────────────────
 #
 #     source "${SCRIPT_DIR}/../../lib/check-report.sh"
-#     check_init "janus.config"        # 이 점검이 무엇을 보는지 (단계 id)
+#     check_init "nginx.routes"        # 이 점검이 무엇을 보는지 (단계 id)
 #     check_args "$@"                  # --json 을 걸러낸다
 #
 #     ok    "바이너리 있음"
 #     pend  "secrets/ 없음 — install.sh --apply 를 돌리세요"
 #     skip  "settings.ini 없음 — LAN 전용으로 설치됩니다"
-#     warn  "Kamailio 가 떠 있지 않습니다"
+#     warn  "nginx 가 떠 있지 않습니다"
 #     info  "제목 줄"                   # 판정에 들어가지 않는 안내
 #
 #     check_finish                     # JSON 이면 여기서 출력하고 종료

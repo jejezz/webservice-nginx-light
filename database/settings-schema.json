@@ -26,7 +26,7 @@
       "type": "text",
       "pattern": "^([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$",
       "patternHint": "1~65535",
-      "effect": "99-project.cnf 의 port 가 됩니다. 바꾸면 각 서비스의 접속 설정(websocket-relay 의 .env, kamailio 의 DBURL)도 같이 바꿔야 합니다 — 이 값만 바꾸면 붙지 못합니다."
+      "effect": "99-project.cnf 의 port 가 됩니다. 바꾸면 이 DB 에 붙는 서비스의 접속 설정(manager 의 config.json 등)도 같이 바꿔야 합니다 — 이 값만 바꾸면 붙지 못합니다."
     },
     {
       "key": "innodb_buffer_pool_size",

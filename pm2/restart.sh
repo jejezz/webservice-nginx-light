@@ -8,8 +8,8 @@
 #
 # ── 왜 이 스크립트가 있는가 ─────────────────────────────────────────────
 #
-# 어떤 앱은 보조 그룹이 있어야 일을 한다. kamailio-dashboard 는 Kamailio 의
-# JSON-RPC FIFO 를 읽는데 /run/kamailio 가 drwxrwx--- kamailio:kamailio 다.
+# 어떤 앱은 보조 그룹이 있어야 일을 한다. 다른 계정이 소유한 소켓이나 FIFO 를
+# 읽는 앱이 그렇다 (예: /run/<서비스> 가 drwxrwx--- <서비스>:<서비스> 인 경우).
 #
 # 그런데 보조 그룹은 **로그인할 때** initgroups() 로 한 번 정해지고 그 뒤로는
 # 자식에게 그대로 상속된다. usermod -aG 는 /etc/group 만 고치므로, 이미 떠 있는
@@ -18,7 +18,7 @@
 #
 # 그래서 손으로는 이런 주문을 외우게 된다.
 #
-#   pm2 kill && sg kamailio -c "cd <프로젝트>/pm2 && pm2 start ecosystem.config.js && pm2 save"
+#   pm2 kill && sg <그룹> -c "cd <프로젝트>/pm2 && pm2 start ecosystem.config.js && pm2 save"
 #
 # 절대경로가 박힌 한 줄을 문서에 적어 두는 대신, 여기서 한다. 필요한 그룹은
 # 선언에서 읽는다 — services/*/pm2-conf/*.ini 의 [app] 에 groups 를 적으면 된다.
@@ -226,7 +226,7 @@ do_restart() {
         else
             warn "지금 셸에 그룹이 없습니다: ${miss[*]}"
             info ""
-            info "이 셸로 띄우면 대시보드가 Kamailio 에 닿지 못합니다. 둘 중 하나로 하세요."
+            info "이 셸로 띄우면 앱이 그 그룹의 자원(소켓·파일)에 닿지 못합니다. 둘 중 하나로 하세요."
             info ""
             info "  ① 다시 로그인한 뒤 (권장 — 재부팅 후에도 유효)"
             info "       $0 --restart"

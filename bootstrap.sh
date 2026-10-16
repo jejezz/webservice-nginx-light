@@ -9,8 +9,8 @@
 #   ./bootstrap.sh --expose-https   (sudo) 같은 일을 구축용 사설 인증서로 HTTPS 로
 #
 # ── 이 스크립트가 하는 일과 하지 않는 일 ────────────────────────
-# **여기서 하는 것은 "마법사까지 가는 길" 뿐입니다.** 실제 설치(MariaDB·Kamailio·
-# Janus·nginx·인증서)는 마법사가 단계별로 안내합니다. 그 편이 나은 이유는,
+# **여기서 하는 것은 "마법사까지 가는 길" 뿐입니다.** 실제 설치(MariaDB·nginx·
+# 인증서)는 마법사가 단계별로 안내합니다. 그 편이 나은 이유는,
 # 그 일들이 sudo 를 쓰고 장비마다 값이 다르며 순서가 있기 때문입니다 — 한 번에
 # 몰아 돌리면 어디서 왜 멈췄는지 알 수 없습니다.
 #
@@ -84,7 +84,7 @@ probe() {
     command -v node >/dev/null 2>&1 && HAVE_NODE=1
     command -v npm  >/dev/null 2>&1 && HAVE_NPM=1
     command -v pm2  >/dev/null 2>&1 && HAVE_PM2=1
-    # node 20 미만이면 릴레이가 뜨지 않는다 (fetch·AbortSignal.timeout 을 쓴다).
+    # node 20 미만이면 manager 가 뜨지 않는다 (fetch·AbortSignal.timeout 을 쓴다).
     [[ $HAVE_NODE -eq 1 ]] && NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
     [[ -d "${ROOT}/services/manager/server/node_modules" ]] && HAVE_DEPS=1
     [[ -f "${ROOT}/services/manager/server/public/index.html" ]] && HAVE_BUILD=1
@@ -208,8 +208,8 @@ next_steps() {
   ${DIM}관리자 콘솔은 config.json 만으로 인증되어 그 고리 밖에 있습니다.
   DB 를 세우고 자기 계정을 만든 뒤부터는 일반 로그인으로 들어가면 됩니다.${OFF}
 
-  마법사가 나머지를 순서대로 안내합니다 — 사이트 값 → DB → pm2 → Kamailio →
-  Janus → nginx → 릴레이 → 시험 통화. 각 단계는 무엇을 왜 하는지와 점검 결과를
+  마법사가 나머지를 순서대로 안내합니다 — 사이트 값 → pm2 → DB → 서버 인증서 →
+  nginx 라우트. 각 단계는 무엇을 왜 하는지와 점검 결과를
   함께 보여 주고, sudo 가 필요한 명령은 복사해 쓰도록 보여 주기만 합니다.
 
 EOF

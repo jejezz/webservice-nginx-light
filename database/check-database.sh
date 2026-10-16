@@ -65,7 +65,7 @@ password_file_for() {
 }
 
 # 비밀번호가 ps 에 노출되지 않도록 -p 대신 MYSQL_PWD 로 넘긴다.
-# (services/kamailio/install.sh 의 verify_db_login 과 같은 이유다)
+# (비밀번호를 명령행 인자로 넘기지 않는 것은 DB 를 쓰는 모든 스크립트의 규칙이다)
 db_query() {
     local user="$1" password="$2" sql="$3"
     MYSQL_PWD="$password" mariadb -h 127.0.0.1 -u "$user" -N -B -e "$sql" 2>/dev/null || true
