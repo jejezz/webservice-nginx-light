@@ -16,15 +16,17 @@ usage() {
     echo "  domain               서버 도메인 (기본값: localhost)"
     echo ""
     echo "Options:"
-    echo "  --auto               로컬 IP + 외부 IP 자동 감지하여 추가"
+    echo "  --auto               이 장비의 LAN IP 를 자동 감지하여 추가 (외부 IP 는 조회하지 않음)"
+    echo "  --external           외부(공인) IP 도 인터넷에서 조회하여 추가 (ifconfig.me 등에 요청을 보냄)"
     echo "  --ip <ip>            허용할 IP 추가 (여러 번 사용 가능)"
     echo "  --ip <ip1,ip2,...>   쉼표로 구분하여 여러 IP 한번에 추가"
     echo "  --dns <domain>       허용할 도메인 추가 (여러 번 사용 가능)"
     echo "  -h, --help           도움말"
     echo ""
     echo "Examples:"
-    echo "  $0 --auto                                   # 자동 IP 감지 + localhost"
-    echo "  $0 --auto example.com                       # 자동 IP 감지 + 도메인"
+    echo "  $0 --auto                                   # LAN IP 자동 감지 + localhost"
+    echo "  $0 --auto example.com                       # LAN IP 자동 감지 + 도메인"
+    echo "  $0 --auto --external example.com            # LAN IP + 외부 IP 까지"
     echo "  $0 --auto --ip 10.0.0.50 example.com        # 자동 + 수동 IP 추가"
     echo "  $0 --ip 192.168.0.10 example.com            # IP 1개 추가"
     echo "  $0 --ip 192.168.0.10,192.168.0.11,10.0.0.1  # IP 여러개 추가"
@@ -35,6 +37,7 @@ DOMAIN=""
 EXTRA_IPS=()
 EXTRA_DNS=()
 AUTO_DETECT=false
+WITH_EXTERNAL=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -43,6 +46,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --auto)
             AUTO_DETECT=true
+            shift
+            ;;
+        --external)
+            WITH_EXTERNAL=true
             shift
             ;;
         --ip)
@@ -82,17 +89,22 @@ if [[ "$AUTO_DETECT" == true ]]; then
         echo "  Local IP: ${ip}"
     done < <(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | grep -v '^127\.' | grep -v '^172\.1[7-9]\.' | grep -v '^172\.2[0-9]\.' | grep -v '^172\.3[0-1]\.')
 
-    # 외부 IP
-    external_ip=""
-    external_ip="$(curl -s --max-time 5 ifconfig.me 2>/dev/null)" || \
-    external_ip="$(curl -s --max-time 5 api.ipify.org 2>/dev/null)" || \
-    external_ip="$(curl -s --max-time 5 checkip.amazonaws.com 2>/dev/null)" || true
+    # 외부 IP — 인터넷의 조회 서비스에 요청을 보내고, 공인 IP 가 인증서에 박힌다.
+    # LAN 전용에는 필요 없으므로 --external 을 줄 때만 한다.
+    if [[ "$WITH_EXTERNAL" == true ]]; then
+        external_ip=""
+        external_ip="$(curl -s --max-time 5 ifconfig.me 2>/dev/null)" || \
+        external_ip="$(curl -s --max-time 5 api.ipify.org 2>/dev/null)" || \
+        external_ip="$(curl -s --max-time 5 checkip.amazonaws.com 2>/dev/null)" || true
 
-    if [[ -n "$external_ip" ]]; then
-        EXTRA_IPS+=("$external_ip")
-        echo "  External IP: ${external_ip}"
+        if [[ -n "$external_ip" ]]; then
+            EXTRA_IPS+=("$external_ip")
+            echo "  External IP: ${external_ip}"
+        else
+            echo "  External IP: (감지 실패 - 스킵)"
+        fi
     else
-        echo "  External IP: (감지 실패 - 스킵)"
+        echo "  External IP: (조회하지 않음 — 필요하면 --external)"
     fi
 
     echo ""
@@ -151,7 +163,10 @@ EOF
     ip_idx=1
 
     echo "DNS.${dns_idx} = ${DOMAIN}"; ((dns_idx++))
-    echo "DNS.${dns_idx} = *.${DOMAIN}"; ((dns_idx++))
+    # IP 주소 뒤에 점을 붙인 와일드카드(*.10.0.0.1)는 의미가 없으므로 이름일 때만 만든다.
+    if [[ ! "$DOMAIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "DNS.${dns_idx} = *.${DOMAIN}"; ((dns_idx++))
+    fi
     if [[ "$DOMAIN" != "localhost" ]]; then
         echo "DNS.${dns_idx} = localhost"; ((dns_idx++))
     fi
@@ -162,8 +177,14 @@ EOF
 
     echo "IP.${ip_idx} = 127.0.0.1"; ((ip_idx++))
     echo "IP.${ip_idx} = ::1"; ((ip_idx++))
-    for ip in "${EXTRA_IPS[@]+"${EXTRA_IPS[@]}"}"; do
-        [[ -z "$ip" ]] && continue
+    # 도메인 자리에 IP 를 적었으면 그 IP 도 IP SAN 으로 (브라우저는 IP 접속에 IP SAN 만 본다)
+    _san_ips=()
+    if [[ "$DOMAIN" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then _san_ips+=("$DOMAIN"); fi
+    _san_ips+=("${EXTRA_IPS[@]+"${EXTRA_IPS[@]}"}")
+    declare -A _seen_ip=()
+    for ip in "${_san_ips[@]+"${_san_ips[@]}"}"; do
+        [[ -z "$ip" || -n "${_seen_ip[$ip]:-}" ]] && continue
+        _seen_ip[$ip]=1
         echo "IP.${ip_idx} = ${ip}"; ((ip_idx++))
     done
 } > "${CERT_DIR}/server/server.ext"
@@ -307,5 +328,5 @@ echo "     cd nginx && sudo ./install_nginx_stack.sh --skip-install     (구축 
 echo "2. 브라우저·클라이언트 기기에 cert/ca/ca.crt 를 신뢰할 수 있는 인증서로 등록하세요"
 echo "   (등록하지 않으면 접속할 때 경고가 뜹니다)"
 echo ""
-echo "참고: --auto 는 외부 IP 를 인터넷에서 조회해 인증서에 함께 넣습니다. LAN 전용이면"
-echo "      --ip <LAN IP> <host> 로 직접 지정하세요. 다시 실행하면 CA 부터 새로 만듭니다."
+echo "참고: --auto 는 이 장비의 LAN IP 만 넣습니다. 공인 IP 까지 넣으려면 --external 을 더하세요."
+echo "      이 스크립트는 다시 실행하면 CA 부터 새로 만들어 덮어씁니다."

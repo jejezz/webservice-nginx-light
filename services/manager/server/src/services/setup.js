@@ -117,7 +117,8 @@ const STEPS = [
       cwd: 'nginx',
       run:
         '# 값은 1단계(site/settings.ini)의 tls_mode 로 바꿉니다.\n' +
-        '# 사설로 간다면 인증서를 만듭니다:\n' +
+        '# 사설로 간다면 인증서를 만듭니다 (이 장비의 LAN IP 가 자동으로 들어갑니다.\n' +
+        '# 공인 IP 까지 넣으려면 --external 을 더합니다):\n' +
         './generate_certs.sh --auto <host>',
       sudo: false,
     },
@@ -303,6 +304,8 @@ const AUTO = {
   'site.settings': { commands: [{ cwd: '.', argv: ['./site/apply.sh', '--apply'] }] },
   // 사설 인증서를 만든다 (공인으로 갈 때도 nginx 가 뜨려면 임시로 필요하다). 갈림길 자체(tls_mode)는
   // 1단계 폼에서 사람이 정한다 — 이 명령은 그것을 바꾸지 않는다. host 는 저장된 사이트 설정에서 읽는다.
+  // --auto 는 이 장비의 LAN IP 만 넣는다 (외부 IP 조회는 --external 일 때만). LAN 전용에 공인 IP 가
+  // 인증서에 박히지 않게 하려는 것이라 자동 실행과 사람이 치는 명령이 같은 결과를 낸다.
   'tls.decide': { commands: [{ cwd: 'nginx', argv: ['./generate_certs.sh', '--auto', '{{site.host}}'] }] },
   'database.schema': {
     needsDbAdmin: true,

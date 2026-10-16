@@ -235,7 +235,8 @@ CA · 서버 인증서 · 기본 클라이언트 인증서를 한 벌로 만듭�
 
 ```bash
 cd nginx
-./generate_certs.sh --auto <host>                        # LAN·공인 IP 자동 감지 + 이름 (권장)
+./generate_certs.sh --auto <host>                        # 이 장비의 LAN IP 자동 감지 + 이름 (권장)
+./generate_certs.sh --auto --external <host>             # 공인 IP 도 조회해서 추가 (인터넷에 요청을 보냄)
 ./generate_certs.sh <host>                               # 이름만
 ./generate_certs.sh --ip 192.168.0.10,10.0.0.1 <host>    # IP 를 직접
 ./generate_certs.sh --dns other.example <host>           # 이름 추가

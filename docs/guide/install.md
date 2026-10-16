@@ -455,9 +455,10 @@ cd services/manager/server && npm run admin -- approve you@example.com
 - **MySQL 8.0 에서 옮기는 장비.** [infrastructure.md](infrastructure.md) 7.9 의 순서를
   따릅니다. 덤프 변환과 계정 호스트 범위가 걸립니다.
 
-**`tls.decide`.** 사설로 간다면 인증서를 만들어 둡니다. 마법사가 보여 주는 `--auto` 는 **외부 IP 를
-인터넷에서 조회해 인증서의 SAN 에 함께 넣습니다.** LAN 전용이면 원치 않는 값이므로
-`./generate_certs.sh --ip <LAN IP> <host>` 로 직접 지정하세요(예: `--ip 10.10.0.225 10.10.0.225`).
+**`tls.decide`.** 사설로 간다면 인증서를 만들어 둡니다. 마법사의 `--auto` 는 **이 장비의 LAN IP 만**
+인증서에 넣고 인터넷 조회는 하지 않습니다. 공인 IP 까지 넣어야 한다면 `--external` 을 더하세요
+(`./generate_certs.sh --auto --external <host>` — ifconfig.me 등에 요청을 보냅니다). `<host>` 를 IP
+주소로 적으면 그 IP 가 IP SAN 으로 들어갑니다(브라우저는 IP 접속에 IP SAN 만 봅니다).
 이 스크립트는 **다시 실행하면 CA 부터 새로 만들어 덮어씁니다** — 클라이언트에 CA 를 신뢰 등록한
 뒤에는 다시 만들지 마세요. 사설 서버 인증서의 유효 기간은 1년입니다(`openssl x509 -enddate -noout -in nginx/cert/server/server.crt`). `nginx.routes` 점검이 서버 인증서
 파일이 없으면 문제로 보고하므로 그것이 앞이어야 합니다.
