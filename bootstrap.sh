@@ -75,7 +75,7 @@ step() { echo; echo "${DIM}──${OFF} $*"; }
 #
 # 세 모드가 전부 이것을 본다. 판정을 한 곳에서 내려야 --check 가 말한 것과
 # 안내 셸이 보여 주는 것이 어긋나지 않는다.
-NODE_MAJOR=0; HAVE_NODE=0; HAVE_NPM=0; HAVE_PM2=0
+NODE_MAJOR=0; HAVE_NODE=0; HAVE_NPM=0; HAVE_PM2=0; HAVE_NGINX=0; HAVE_MARIADB=0
 HAVE_DEPS=0; HAVE_BUILD=0; HAVE_CONFIG=0; RUNNING=0
 CONFIG="${ROOT}/services/manager/config.json"
 EXAMPLE="${ROOT}/services/manager/config.example.json"
@@ -84,6 +84,10 @@ probe() {
     command -v node >/dev/null 2>&1 && HAVE_NODE=1
     command -v npm  >/dev/null 2>&1 && HAVE_NPM=1
     command -v pm2  >/dev/null 2>&1 && HAVE_PM2=1
+    # nginx 는 /usr/sbin 에 있어 일반 사용자의 PATH 에 없을 수 있다.
+    { command -v nginx >/dev/null 2>&1 || [[ -x /usr/sbin/nginx ]]; } && HAVE_NGINX=1
+    { command -v mariadbd >/dev/null 2>&1 || [[ -x /usr/sbin/mariadbd ]] \
+        || dpkg -s mariadb-server >/dev/null 2>&1; } && HAVE_MARIADB=1
     # node 20 미만이면 manager 가 뜨지 않는다 (fetch·AbortSignal.timeout 을 쓴다).
     [[ $HAVE_NODE -eq 1 ]] && NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
     [[ -d "${ROOT}/services/manager/server/node_modules" ]] && HAVE_DEPS=1
@@ -111,6 +115,8 @@ MANAGER_PORT() {
 # 설치하지 마세요 — NodeSource 의 nodejs 패키지가 이미 담고 있습니다.
 NODE_HOW="sudo ./install-node.sh --apply"
 PM2_HOW="./pm2/install_pm2.sh install"
+NGINX_HOW="sudo apt-get install -y nginx"
+MARIADB_HOW="sudo ./database/install_mariadb.sh install"
 APPLY_HOW="./bootstrap.sh --apply"
 
 # ── --check: 보고서 ───────────────────────────────────────────────
@@ -141,6 +147,21 @@ report() {
     else
         todo "pm2 가 없습니다 — 서비스를 띄우고 재부팅 뒤 되살리는 데 씁니다"
         echo "      $(cmd "$PM2_HOW")   ${DIM}sudo 로 전역 설치합니다${OFF}"
+    fi
+
+    # 기반 패키지. 설정은 마법사가 하지만 설치는 먼저 되어 있어야 한다 —
+    # nginx 가 없으면 --expose-* 가 안 되고, MariaDB 가 없으면 로그인 계정이 없다.
+    if [[ $HAVE_NGINX -eq 1 ]]; then
+        ok "nginx $(nginx -v 2>&1 | sed 's|.*/||')"
+    else
+        todo "nginx 가 없습니다 — 443 에서 TLS 를 끊고 /manager 로 넘기는 리버스 프록시입니다"
+        echo "      $(cmd "$NGINX_HOW")   ${DIM}설정은 마법사의 nginx 단계에서 합니다${OFF}"
+    fi
+    if [[ $HAVE_MARIADB -eq 1 ]]; then
+        ok "MariaDB 설치됨"
+    else
+        todo "MariaDB 가 없습니다 — 관리자 계정과 감사 로그가 여기 있습니다"
+        echo "      $(cmd "$MARIADB_HOW")   ${DIM}22.04 는 먼저 docs/guide/install.md 2.1 의 11.4 저장소를 추가하세요${OFF}"
     fi
 
     # 마법사(/manager/setup)가 manager 안에 있다. 그래서 manager 하나만 세우면
@@ -503,6 +524,8 @@ header() {
     s+="$( [[ $HAVE_NODE -eq 1 && "$NODE_MAJOR" -ge 20 ]] && echo "✓ node" || echo "✗ node" )   "
     s+="$( [[ $HAVE_NPM -eq 1 ]]    && echo "✓ npm"  || echo "✗ npm" )   "
     s+="$( [[ $HAVE_PM2 -eq 1 ]]    && echo "✓ pm2"  || echo "· pm2" )   "
+    s+="$( [[ $HAVE_NGINX -eq 1 ]]  && echo "✓ nginx" || echo "· nginx" )   "
+    s+="$( [[ $HAVE_MARIADB -eq 1 ]] && echo "✓ MariaDB" || echo "· MariaDB" )   "
     s+="$( [[ $HAVE_DEPS -eq 1 ]]   && echo "✓ 의존성" || echo "· 의존성" )   "
     s+="$( [[ $HAVE_BUILD -eq 1 ]]  && echo "✓ 화면"   || echo "· 화면" )   "
     s+="$( [[ $HAVE_CONFIG -eq 1 ]] && echo "✓ 비밀번호" || echo "· 비밀번호" )   "
@@ -522,6 +545,14 @@ header() {
         what="pm2 가 없습니다. 서비스를 띄우고 재부팅 뒤 되살리는 데 씁니다."
         how="$PM2_HOW"
         tail1="sudo 로 전역 설치합니다 (npm install -g pm2)."
+    elif [[ $HAVE_NGINX -eq 0 ]]; then
+        what="nginx 가 없습니다. 443 에서 TLS 를 끊고 /manager 로 넘기는 입구입니다."
+        how="$NGINX_HOW"
+        tail1="설치만 합니다. 라우트·인증서 설정은 구축 마법사의 nginx 단계에서 합니다."
+    elif [[ $HAVE_MARIADB -eq 0 ]]; then
+        what="MariaDB 가 없습니다. 관리자 계정과 감사 로그가 여기 있습니다."
+        how="$MARIADB_HOW"
+        tail1="설치만 합니다. DB·계정은 마법사의 DB 단계가 만듭니다. 22.04 는 install.md 2.1 의 11.4 저장소를 먼저."
     elif [[ $HAVE_DEPS -eq 0 || $HAVE_BUILD -eq 0 || $HAVE_CONFIG -eq 0 || $RUNNING -eq 0 ]]; then
         local left=()
         [[ $HAVE_DEPS -eq 0 ]]   && left+=("의존성 설치")
