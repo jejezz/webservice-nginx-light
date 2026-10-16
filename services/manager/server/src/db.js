@@ -7,6 +7,7 @@ const log = require('./logger');
  * 설정이 없으면 풀을 만들지 않고, DB를 쓰는 기능(auth.provider=db)은 비활성으로 동작한다.
  */
 let pool = null;
+let poolPassword = null;
 
 function isConfigured() {
   return Boolean(config.database && config.database.host && config.database.name);
@@ -15,12 +16,19 @@ function isConfigured() {
 function getPool() {
   if (!isConfigured()) return null;
 
+  // 비밀번호 파일이 늦게 생긴 경우(config.js 참고) 빈 비밀번호로 만든 풀을 버리고 다시 만든다.
+  if (pool && !poolPassword && config.database.password) {
+    pool.end().catch(() => {});
+    pool = null;
+  }
+
   if (!pool) {
+    poolPassword = config.database.password;
     pool = mysql.createPool({
       host: config.database.host,
       port: config.database.port,
       user: config.database.user,
-      password: config.database.password,
+      password: poolPassword,
       database: config.database.name,
       connectionLimit: config.database.connectionLimit,
       waitForConnections: true,
