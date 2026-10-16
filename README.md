@@ -96,8 +96,6 @@ cd services/<이름> && npm run build && npm run restart
 
 ## 알려진 한계
 
-- 빈 장비에서 `bootstrap.sh` 부터 마법사 끝까지 **끝까지 돌려 본 적이 없습니다.** 서버 테스트(`node --test`)와
-  화면 빌드, manager 기동은 확인했고, nginx 설정 생성과 브라우저에서의 화면 동작은 확인하지 못했습니다.
 - MariaDB 는 배포판 기본 버전을 설치합니다. 22.04 의 10.6 은 지원이 끝났으므로 11.4 저장소를 손으로 추가해야
   합니다 ([docs/guide/install.md](docs/guide/install.md) 2.1). 이미 MySQL 이 있는 장비는
   [docs/guide/infrastructure.md](docs/guide/infrastructure.md) 7.9 를 따릅니다.
