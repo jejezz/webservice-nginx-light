@@ -16,6 +16,9 @@ const DEFAULTS = {
   // 외부에 직접 노출해야 한다면 '0.0.0.0'으로 바꾼다.
   host: '127.0.0.1',
   basePath: '/manager',
+  // 브라우저 탭 제목과 화면에 쓰는 이 장비의 별칭. 비우면 호스트 이름을 쓴다.
+  // 같은 대시보드가 여러 장비에 있을 때 탭을 구분하려고 둔다.
+  alias: '',
   sessionSecret: '',
   sessionTtlMinutes: 120,
   // true | false | 'auto'. auto 는 요청이 https 일 때만 Secure 를 붙인다 — 구축 중 nginx 가 평문 HTTP 로 열려
@@ -160,6 +163,7 @@ module.exports = Object.freeze({
   port,
   host,
   basePath,
+  alias: String(process.env.MANAGER_ALIAS || merged.alias || '').trim().slice(0, 40),
   sessionSecret,
   sessionTtlMs: (parseInt(merged.sessionTtlMinutes, 10) || 120) * 60 * 1000,
   cookieSecure: merged.cookieSecure === false ? false : merged.cookieSecure === true ? true : 'auto',

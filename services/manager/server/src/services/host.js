@@ -1,6 +1,7 @@
 'use strict';
 
 const os = require('os');
+const config = require('../config');
 
 /**
  * 이 대시보드가 돌고 있는 장비를 식별하는 정보.
@@ -37,12 +38,13 @@ function maskIPv4(address) {
 }
 
 /**
- * @returns {{hostname: string, address: string|null}}
+ * @returns {{hostname: string, alias: string, address: string|null}}
  *   address 는 마스킹된 형태이거나, IPv4 를 찾지 못하면 null.
  */
 function identity() {
   return {
     hostname: os.hostname(),
+    alias: config.alias,
     address: maskIPv4(primaryIPv4()),
   };
 }
