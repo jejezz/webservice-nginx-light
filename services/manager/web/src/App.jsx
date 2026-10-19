@@ -120,8 +120,23 @@ function RequireSuperAdmin({ children }) {
   return children;
 }
 
+/** 탭 제목을 "<별칭 또는 호스트> · Nginx Manager" 로 — 장비가 여러 대일 때 탭을 구분한다. */
+function useDocumentTitle() {
+  useEffect(() => {
+    let cancelled = false;
+    api.host()
+      .then((h) => {
+        const name = h?.alias || h?.hostname;
+        if (!cancelled && name) document.title = `${name} · Nginx Manager`;
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+}
+
 export default function App() {
   const { user, loading } = useAuth();
+  useDocumentTitle();
 
   return (
     <Routes>

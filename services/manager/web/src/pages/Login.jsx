@@ -189,7 +189,7 @@ export default function Login() {
           {/* 장비 식별. 값을 못 받으면 자리를 차지하지 않는다. */}
           {host?.hostname && (
             <p className="pt-1 font-mono text-xs text-muted-foreground">
-              {host.hostname}
+              {host.alias ? `${host.alias} (${host.hostname})` : host.hostname}
               {host.address && (
                 <>
                   <span className="px-1.5 text-muted-foreground/50">·</span>
