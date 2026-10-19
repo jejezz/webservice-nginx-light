@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import { useAuth } from '@/context/auth';
 import { api } from '@/lib/api';
+import { useHost } from '@/lib/useHost';
 import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
 import Setup from '@/pages/Setup';
@@ -122,16 +123,11 @@ function RequireSuperAdmin({ children }) {
 
 /** 탭 제목을 "<별칭 또는 호스트> · Nginx Manager" 로 — 장비가 여러 대일 때 탭을 구분한다. */
 function useDocumentTitle() {
+  const host = useHost();
+  const name = host?.alias || host?.hostname;
   useEffect(() => {
-    let cancelled = false;
-    api.host()
-      .then((h) => {
-        const name = h?.alias || h?.hostname;
-        if (!cancelled && name) document.title = `${name} · Nginx Manager`;
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
+    if (name) document.title = `${name} · Nginx Manager`;
+  }, [name]);
 }
 
 export default function App() {

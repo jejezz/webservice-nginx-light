@@ -4,6 +4,7 @@ import { Activity, BookOpen, Gauge, RadioTower, ListChecks, ShieldCheck, LogOut,
 import { useAuth } from '@/context/auth';
 import { Button } from '@/components/ui/button';
 import { Tooltip } from '@/components/ui/tooltip';
+import { useHost } from '@/lib/useHost';
 
 function Divider() {
   return <div className="h-5 w-px shrink-0 bg-border" aria-hidden="true" />;
@@ -22,6 +23,8 @@ function Divider() {
  */
 export function TopBar({ subtitle, children }) {
   const { user, logout } = useAuth();
+  const host = useHost();
+  const machine = host?.alias || host?.hostname;
 
   return (
     <header className="sticky top-0 z-10 shrink-0 border-b bg-background/95 backdrop-blur">
@@ -31,7 +34,14 @@ export function TopBar({ subtitle, children }) {
             <Activity className="size-4" />
           </div>
           <div>
-            <h1 className="whitespace-nowrap text-sm font-semibold leading-tight">Nginx Manager</h1>
+            <h1 className="whitespace-nowrap text-sm font-semibold leading-tight">
+              Nginx Manager
+              {machine && (
+                <span className="ml-2 rounded border bg-muted px-1.5 py-0.5 align-middle font-mono text-[11px] font-normal text-muted-foreground" title={host.alias ? `${host.alias} (${host.hostname})` : host.hostname}>
+                  {machine}
+                </span>
+              )}
+            </h1>
             <p className="text-xs text-muted-foreground">{subtitle}</p>
           </div>
         </Link>
