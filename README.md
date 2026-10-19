@@ -85,6 +85,7 @@ cd services/<이름> && npm run build && npm run restart
 | [docs/guide/](docs/guide/README.md) | **구현 가이드** — 설치·기반·규약·선언·반영 | 장비 위에서 무언가를 할 때 |
 | [docs/dashboards.md](docs/dashboards.md) | manager 의 화면과 기능 | 대시보드를 쓰거나 고칠 때 |
 | [docs/ports.md](docs/ports.md) | 포트와 공유기 포워딩, 포트 바꾸는 법 | 포트를 열거나 바꿀 때 |
+| [docs/ai-prompt.md](docs/ai-prompt.md) | 다른 AI 에게 넘기는 프롬프트 — 구축 · plug-in 서비스 추가 | AI 에게 구축이나 서비스 추가를 맡길 때 |
 
 문서를 고칠 때의 약속:
 
